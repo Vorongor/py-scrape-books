@@ -1,37 +1,55 @@
-from typing import Generator, Any
-
 import scrapy
-from scrapy.loader import ItemLoader
 from scrape_books.items import ScrapeBooksItem
-from scrapy.http import Response
 
 
 class BooksSpider(scrapy.Spider):
     name = "books"
     allowed_domains = ["books.toscrape.com"]
-    start_urls = ["https://books.toscrape.com/"]
+    start_urls = ["https://books.toscrape.com"]
 
-    def parse(self, response: Response, **kwargs) -> Generator[Any, Any, None]:
-        for book in response.css(".product_pod"):
+    def parse(self, response):
+        """Parse catalog page and follow links to book detail pages."""
+
+        book_links = response.css(
+            "article.product_pod h3 a::attr(href)").getall()
+
+        for link in book_links:
             yield response.follow(
-                book.css("h3 a::attr(href)").get(),
-                callback=self._parse_details
+                link,
+                callback=self.parse_book_details,
             )
 
         next_page = response.css("li.next a::attr(href)").get()
         if next_page:
             yield response.follow(next_page, callback=self.parse)
 
-    def _parse_details(self, response: Response) -> Generator[Any, Any, None]:
-        loader = ItemLoader(item=ScrapeBooksItem(), response=response)
+    def parse_book_details(self, response):
+        """Parse detailed book information page."""
 
-        loader.add_css("title", "h1::text")
-        loader.add_css("price", ".price_color::text")
-        loader.add_css("rating", ".star-rating::attr(class)")
-        loader.add_xpath("upc",
-                         "//th[text()='UPC']/following-sibling::td/text()")
-        loader.add_css("category", ".breadcrumb li:nth-child(3) a::text")
-        loader.add_css("stock_text", ".instock.availability::text")
-        loader.add_css("description", "#product_description + p::text")
+        item = ScrapeBooksItem()
 
-        yield loader.load_item()
+        item["title"] = response.css("div.product_main h1::text").get()
+
+        item["price"] = response.css("p.price_color::text").get()
+
+        availability_text = response.css("p.availability::text").re_first(
+            r"\d+")
+        item["amount_in_stock"] = availability_text
+
+        rating_class = response.css("p.star-rating::attr(class)").get()
+        item["rating"] = rating_class.split()[-1] if rating_class else None
+
+        item["category"] = response.css(
+            "ul.breadcrumb li:nth-child(3) a::text"
+        ).get()
+
+        description = response.css(
+            "#product_description ~ p::text"
+        ).get()
+        item["description"] = description
+
+        item["upc"] = response.xpath(
+            "//th[text()='UPC']/following-sibling::td/text()"
+        ).get()
+
+        yield item
